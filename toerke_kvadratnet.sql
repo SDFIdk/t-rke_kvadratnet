@@ -11,31 +11,34 @@ grid_with_lakes AS (
   FROM "public"."dkn_50km_etrs89" AS g
   LEFT JOIN "geodk"."soe" AS l
   ON ST_Intersects(g.geom, l.geom)
-  AND st_area(l.geom) > 10000
+  AND st_area(l.geom) > 100000
   GROUP BY g.id
 ),
 
--- Identify grid cells intersecting with land borders or not overlapping land at all
-grid_with_land_flags AS (
+-- Identify grid cells which do not overlap the landpolygon
+grid_no_overlap AS (
   SELECT 
-    g.id,
-    MAX(CASE 
-      WHEN ST_Intersects(g.geom, b.geom) THEN 1
-      ELSE 0
-    END) AS intersects_land_border,
-    MAX(CASE 
-      WHEN NOT ST_Intersects(g.geom, b.geom) THEN 1
-      ELSE 0
-    END) AS not_overlap_land
-  FROM "public"."dkn_50km_etrs89" AS g
-  LEFT JOIN "public"."landpolygon" AS b
-  ON ST_Intersects(g.geom, b.geom)
-  GROUP BY g.id
+    g.id, 
+    1 AS no_overlap 
+  FROM "public"."dkn_50km_etrs89" AS g 
+  LEFT JOIN "public"."landpolygon" AS b 
+  ON ST_Intersects(g.geom, b.geom) 
+  WHERE b.geom IS NULL
+),
+
+-- Identify grid cells which partially overlap the landpolygon
+grid_partial_overlap AS (
+  SELECT 
+    g.id, 
+    1 AS partial_overlap 
+  FROM "public"."dkn_50km_etrs89" AS g 
+  JOIN "public"."landpolygon" AS b 
+  ON ST_Overlaps(g.geom, b.geom)
 ),
 
 -- Calculate percentage of each class in each grid cell
-class_breakdown as (
-SELECT
+class_breakdown AS (
+  SELECT
     g.id,
     SUM(CASE WHEN c."Class" = 1 THEN (ST_Area(ST_Intersection(g.geom, c.geom)) / ST_Area(g.geom)) * 100 ELSE 0 END) AS class_1_percentage,
     SUM(CASE WHEN c."Class" = 2 THEN (ST_Area(ST_Intersection(g.geom, c.geom)) / ST_Area(g.geom)) * 100 ELSE 0 END) AS class_2_percentage,
@@ -67,12 +70,11 @@ SELECT
     SUM(CASE WHEN c."Class" = 39 THEN (ST_Area(ST_Intersection(g.geom, c.geom)) / ST_Area(g.geom)) * 100 ELSE 0 END) AS class_39_percentage,
     SUM(CASE WHEN c."Class" = 41 THEN (ST_Area(ST_Intersection(g.geom, c.geom)) / ST_Area(g.geom)) * 100 ELSE 0 END) AS class_41_percentage,
     SUM(CASE WHEN c."Class" = 42 THEN (ST_Area(ST_Intersection(g.geom, c.geom)) / ST_Area(g.geom)) * 100 ELSE 0 END) AS class_42_percentage,
-    SUM(CASE WHEN c."Class" = 44 THEN (ST_Area(ST_Intersection(g.geom, c.geom)) / ST_Area(g.geom)) * 100 ELSE 0 END) AS class_44_percentage,
-    SUM(CASE WHEN c."Class" = 128 THEN (ST_Area(ST_Intersection(g.geom, c.geom)) / ST_Area(g.geom)) * 100 ELSE 0 END) AS class_128_percentage,
+    SUM(CASE WHEN c."Class" = 44 OR c."Class" = 128 THEN (ST_Area(ST_Intersection(g.geom, c.geom)) / ST_Area(g.geom)) * 100 ELSE 0 END) AS class_44_percentage,
     LEAST(
         SUM(
             CASE 
-                WHEN c."Class" IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 18, 20, 21, 23, 24, 25, 26, 27, 29, 30, 33, 35, 36, 37, 39, 41, 42, 44, 128)
+                WHEN c."Class" IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 18, 20, 21, 23, 24, 25, 26, 27, 29, 30, 33, 35, 36, 37, 39, 41, 42, 44)
                 THEN (ST_Area(ST_Intersection(g.geom, c.geom)) / ST_Area(g.geom)) * 100 
                 ELSE 0 
             END
@@ -81,7 +83,7 @@ SELECT
     GREATEST(100 - LEAST(
         SUM(
             CASE 
-                WHEN c."Class" IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 18, 20, 21, 23, 24, 25, 26, 27, 29, 30, 33, 35, 36, 37, 39, 41, 42, 44, 128)
+                WHEN c."Class" IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16, 18, 20, 21, 23, 24, 25, 26, 27, 29, 30, 33, 35, 36, 37, 39, 41, 42, 44)
                 THEN (ST_Area(ST_Intersection(g.geom, c.geom)) / ST_Area(g.geom)) * 100 
                 ELSE 0 
             END
@@ -97,8 +99,8 @@ GROUP BY g.id
 SELECT 
   g.*,
   lakes.contains_lake,
-  flags.intersects_land_border,
-  flags.not_overlap_land,
+  COALESCE(no_overlap.no_overlap, 0) AS no_overlap,
+  COALESCE(partial_overlap.partial_overlap, 0) AS partial_overlap,
   cb.class_1_percentage,
   cb.class_2_percentage,
   cb.class_3_percentage,
@@ -130,12 +132,11 @@ SELECT
   cb.class_41_percentage,
   cb.class_42_percentage,
   cb.class_44_percentage,
-  cb.class_128_percentage,
   cb.total_percentage AS total_class_coverage,
   cb.remaining_percentage AS unclassified_percentage
--- FROM grid_with_land_flags AS g
-FROM "public"."dkn_50km_etrs89" as g
-JOIN grid_with_lakes AS lakes on lakes.id = g.id
-JOIN grid_with_land_flags as flags on flags.id = g.id
+FROM "public"."dkn_50km_etrs89" AS g
+LEFT JOIN grid_with_lakes AS lakes ON lakes.id = g.id
+LEFT JOIN grid_no_overlap AS no_overlap ON no_overlap.id = g.id
+LEFT JOIN grid_partial_overlap AS partial_overlap ON partial_overlap.id = g.id
 JOIN class_breakdown AS cb ON g.id = cb.id
 ORDER BY g.id;
