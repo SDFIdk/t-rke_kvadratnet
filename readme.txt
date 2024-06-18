@@ -18,3 +18,11 @@ Tile data contents:
 	
 	Total class overlap: Percent of the tile with CORINE overlap
 		Unclassified percentage: Percent of the tile without CORINE overlap.
+
+
+Revision 2 files limit the extent of the grid to a boundingbox around the land polygon and aggregates the classes in to 5:
+	Forest
+	Agriculture
+	Urban
+	Nature
+	Water
